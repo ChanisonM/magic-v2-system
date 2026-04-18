@@ -1,0 +1,20 @@
+# 1. สร้างโฟลเดอร์หลักและเข้าไปข้างใน
+mkdir magic-v2-system
+cd magic-v2-system
+
+# 2. สร้างโฟลเดอร์แยก Backend และ Frontend
+mkdir backend
+mkdir frontend
+
+# 3. เข้าไปเตรียม Backend
+cd backend
+python -m venv venv
+
+# 4. Activate Virtual Environment
+# สำหรับ Windows:
+venv\Scripts\activate
+# สำหรับ Mac/Linux:
+# source venv/bin/activate
+
+# 5. ติดตั้ง Library ที่จำเป็น (ตัวใหม่คือ flask-cors)
+pip install flask flask-sqlalchemy flask-cors
