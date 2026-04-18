@@ -1,0 +1,146 @@
+from flask import Flask, jsonify, request
+from flask_sqlalchemy import SQLAlchemy
+from flask_cors import CORS
+from datetime import datetime , timezone , timedelta
+from werkzeug.security import generate_password_hash, check_password_hash
+
+# ตั้งค่า Offset สำหรับประเทศไทย
+thailand_tz = timezone(timedelta(hours=7))
+
+app = Flask(__name__)
+# CORS ช่วยให้ Vue.js ที่รันคนละ Port (เช่น 5173) คุยกับ Flask (5000) ได้
+CORS(app)
+
+# ตั้งค่า Database SQLite (จะสร้างไฟล์ชื่อ magic_v2.db)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///magic_v2.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)    
+
+# --- คลาสแม่สำหรับเก็บเวลา ---
+class TimestampMixin(object):
+    # ใช้ lambda เพื่อให้คำนวณเวลาใหม่ทุกครั้งที่มีการบันทึกข้อมูล
+    created_at = db.Column(db.DateTime, default=lambda:datetime.now(thailand_tz))
+    updated_at = db.Column(db.DateTime, default=lambda:datetime.now(thailand_tz), onupdate= lambda : datetime.now(thailand_tz))
+    is_deleted = db.Column(db.Boolean, default=False)
+
+# --- โครงสร้างฐานข้อมูล (Models) ---
+
+class User(db.Model, TimestampMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+    
+
+    role = db.Column(db.String(20), default='staff')    
+
+    image_url = db.Column(db.String(255), default="default-profile.png")
+    
+class Product(db.Model , TimestampMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    price = db.Column(db.Float, nullable=False)
+    stock = db.Column(db.Integer , default=0)
+    category = db.Column(db.String(50))
+    description = db.Column(db.String(255), nullable=True)
+    image_url = db.Column(db.String(255), default="default-profile.png")
+    deleted_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    deleted_at = db.Column(db.DateTime, nullable=True)
+
+class Order(db.Model , TimestampMixin):
+    id = db.Column(db.Integer , primary_key=True)
+    total_price = db.Column(db.Float , nullable=False)
+    items = db.relationship('OrderItem' , backref="order" , lazy=True)
+
+class OrderItem(db.Model, TimestampMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    quantity = db.Column(db.Integer, nullable=False)
+    price_at_sale = db.Column(db.Float, nullable=False)
+
+# --- Initialize Database ---
+with app.app_context():
+    db.create_all()
+
+# --- API Routes ---
+@app.route('/')
+def index():
+    return jsonify({
+        "status": "online",
+        "message": "Magic V2 API with Images & Timestamps is ready!",
+        "server_time": datetime.now(thailand_tz).strftime('%Y-%m-%d %H:%M:%S')
+    })
+
+# API สำหรับสมัครสมาชิก
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    
+    # 1. เช็คว่ามีข้อมูลส่งมาไหม
+    if not data:
+        return jsonify({"message": "No data provided"}), 400
+        
+    username = data.get('username', '').strip() # .strip() ช่วยตัดช่องว่างหัวท้ายออก
+    password = data.get('password', '').strip()
+    
+    # 2. เช็คค่าว่าง (หัวใจหลักที่นายถาม)
+    if not username or not password:
+        return jsonify({"message": "Username and password cannot be empty"}), 400
+
+    # 3. (แถม) เช็คความยาวขั้นต่ำ เพื่อความปลอดภัย
+    if len(username) < 3 or len(password) < 6:
+        return jsonify({"message": "Username min 3 chars, Password min 6 chars"}), 400
+    
+    # 4. เช็คว่าชื่อซ้ำไหม (เหมือนเดิม)
+    if User.query.filter_by(username=username).first():
+        return jsonify({"message": "User already exists"}), 400
+    
+    # ถ้าผ่านหมดทุึกด่าน ค่อยบันทึก
+    new_user = User(username=username)
+    new_user.set_password(password)
+    
+    if 'image_url' in data:
+        new_user.image_url = data['image_url']
+        
+    db.session.add(new_user)
+    db.session.commit()
+    return jsonify({"message": "User registered successfully"}), 201
+
+
+@app.route('/api/products', methods=['GET'])
+def get_products():
+    # ดึงเฉพาะสินค้าที่ยังไม่ถูกลบ
+    products = Product.query.filter_by(is_deleted=False).all()
+    return jsonify([{"id": p.id, "name": p.name} for p in products])
+
+@app.route('/api/products/<int:product_id>/delete', methods=['POST'])
+def delete_product(product_id):
+    # สมมติว่าเราได้ข้อมูล User มาจาก Token (ตอนนีลองจำลองเป็น User ID 1 ก่อน)
+    current_user_id = 1 
+    user = User.query.get(current_user_id)
+    
+    product = Product.query.get(product_id)
+    if not product:
+        return jsonify({"message": "Product not found"}), 404
+
+    # บันทึกข้อมูลการลบ
+    product.is_deleted = True
+    product.deleted_at = datetime.now(thailand_tz)
+    product.deleted_by_id = user.id
+    
+    db.session.commit()
+    
+    return jsonify({
+        "message": f"Product deleted by {user.username} ({user.role})",
+        "deleted_at": product.deleted_at.strftime('%Y-%m-%d %H:%M:%S')
+    })
+
+
+if __name__ == '__main__' :
+    app.run(debug=True , port=5000)
