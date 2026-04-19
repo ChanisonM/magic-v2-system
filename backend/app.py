@@ -36,25 +36,24 @@ class User(db.Model, TimestampMixin):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
     
-
     role = db.Column(db.String(20), default='staff')    
-
     image_url = db.Column(db.String(255), default="default-profile.png")
     
 class Product(db.Model , TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    price = db.Column(db.Float, nullable=False)
+    price = db.Column(db.Numeric(10, 2), nullable=False)
     stock = db.Column(db.Integer , default=0)
     category = db.Column(db.String(50))
     description = db.Column(db.String(255), nullable=True , default="No description")
     image_url = db.Column(db.String(255), default="default-profile.png")
     deleted_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     deleted_at = db.Column(db.DateTime, nullable=True)
+    deleter = db.relationship('User', foreign_keys=[deleted_by_id])
 
 class Order(db.Model , TimestampMixin):
     id = db.Column(db.Integer , primary_key=True)
-    total_price = db.Column(db.Float , nullable=False)
+    total_price = db.Column(db.Numeric(10, 2) , nullable=False)
     items = db.relationship('OrderItem' , backref="order" , lazy=True)
 
 class OrderItem(db.Model, TimestampMixin):
@@ -62,7 +61,7 @@ class OrderItem(db.Model, TimestampMixin):
     order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
     product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
     quantity = db.Column(db.Integer, nullable=False)
-    price_at_sale = db.Column(db.Float, nullable=False)
+    price_at_sale = db.Column(db.Numeric(10, 2), nullable=False)
 
 # --- Initialize Database ---
 with app.app_context():
