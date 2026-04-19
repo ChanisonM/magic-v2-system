@@ -47,7 +47,7 @@ class Product(db.Model , TimestampMixin):
     price = db.Column(db.Float, nullable=False)
     stock = db.Column(db.Integer , default=0)
     category = db.Column(db.String(50))
-    description = db.Column(db.String(255), nullable=True)
+    description = db.Column(db.String(255), nullable=True , default="No description")
     image_url = db.Column(db.String(255), default="default-profile.png")
     deleted_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     deleted_at = db.Column(db.DateTime, nullable=True)
@@ -112,34 +112,71 @@ def register():
     db.session.commit()
     return jsonify({"message": "User registered successfully"}), 201
 
-
-@app.route('/api/products', methods=['GET'])
-def get_products():
-    # ดึงเฉพาะสินค้าที่ยังไม่ถูกลบ
-    products = Product.query.filter_by(is_deleted=False).all()
-    return jsonify([{"id": p.id, "name": p.name} for p in products])
-
-@app.route('/api/products/<int:product_id>/delete', methods=['POST'])
-def delete_product(product_id):
-    # สมมติว่าเราได้ข้อมูล User มาจาก Token (ตอนนีลองจำลองเป็น User ID 1 ก่อน)
-    current_user_id = 1 
-    user = User.query.get(current_user_id)
-    
-    product = Product.query.get(product_id)
-    if not product:
-        return jsonify({"message": "Product not found"}), 404
-
-    # บันทึกข้อมูลการลบ
-    product.is_deleted = True
-    product.deleted_at = datetime.now(thailand_tz)
-    product.deleted_by_id = user.id
-    
+# API สำหรับเพิ่มสินค้า
+@app.route('/api/products', methods=['POST'])
+def add_product():
+    data = request.get_json()
+    if not data.get('name') or not data.get('price'):
+        return jsonify({"message": "Name and price are required"}), 400
+        
+    new_product = Product(
+        name=data['name'],
+        price=data['price'],
+        stock=data.get('stock', 0),
+        category=data.get('category'),
+        description = data.get('description'),
+        image_url=data.get('image_url', 'default-product.png')
+    )
+    db.session.add(new_product)
     db.session.commit()
+    return jsonify({"message": "Product added successfully"}), 201
+
+# API สำหรับดูรายการสินค้าทั้งหมด
+@app.route('/api/products', methods=['GET'])
+def get_products_list():
+    # ดึงเฉพาะสินค้าที่ยังไม่โดนลบ
+    products = Product.query.filter_by(is_deleted=False).all()
+    return jsonify([{
+        "id": p.id,
+        "name": p.name,
+        "price": p.price,
+        "stock": p.stock,
+        "image": p.image_url
+    } for p in products])
+
+
+@app.route('/api/orders', methods=['POST'])
+def place_order():
+    data = request.get_json() # ส่งมาเป็น { "items": [{"id": 1, "qty": 2}], "staff_id": 1 }
+    total = 0
     
-    return jsonify({
-        "message": f"Product deleted by {user.username} ({user.role})",
-        "deleted_at": product.deleted_at.strftime('%Y-%m-%d %H:%M:%S')
-    })
+    # 1. สร้าง Order หลัก
+    new_order = Order(total_price=0) 
+    db.session.add(new_order)
+    
+    # 2. วนลูปตัดสต็อกและเพิ่ม OrderItem
+    for item in data['items']:
+        product = Product.query.get(item['id'])
+        if product and product.stock >= item['qty']:
+            # ตัดสต็อก!
+            product.stock -= item['qty']
+            
+            # บันทึกรายละเอียดสินค้าในบิล
+            oi = OrderItem(
+                order=new_order,
+                product_id=product.id,
+                quantity=item['qty'],
+                price_at_sale=product.price
+            )
+            total += (product.price * item['qty'])
+            db.session.add(oi)
+        else:
+            db.session.rollback() # ถ้าตัวไหนสต็อกไม่พอ ยกเลิกทั้งบิลทันที
+            return jsonify({"message": f"Stock not enough for {product.name if product else 'ID '+str(item['id'])}"}), 400
+            
+    new_order.total_price = total
+    db.session.commit()
+    return jsonify({"message": "Sale completed!", "total": total}), 201
 
 
 if __name__ == '__main__' :
