@@ -116,14 +116,11 @@ def register():
 @app.route('/api/products', methods=['POST'])
 def add_product():
     data = request.get_json()
-    if not data.get('name') or not data.get('price'):
-        return jsonify({"message": "Name and price are required"}), 400
     if not data.get('name') or data.get('price') is None or float(data.get('price')) < 0:
         return jsonify({"message": "Valid Name and non-negative Price are required"}), 400
         
     new_product = Product(
         name=data['name'],
-        price=data['price'],
         price=data.get('price'),
         stock=data.get('stock', 0),
         category=data.get('category'),
