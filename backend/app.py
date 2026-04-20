@@ -19,9 +19,9 @@ db = SQLAlchemy(app)
 # --- คลาสแม่สำหรับเก็บเวลา ---
 class TimestampMixin(object):
     # ใช้ lambda เพื่อให้คำนวณเวลาใหม่ทุกครั้งที่มีการบันทึกข้อมูล
-    created_at = db.Column(db.DateTime, default=lambda:datetime.now(thailand_tz))
-    updated_at = db.Column(db.DateTime, default=lambda:datetime.now(thailand_tz), onupdate= lambda : datetime.now(thailand_tz))
-    is_deleted = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=lambda:datetime.now(thailand_tz), nullable=True)
+    updated_at = db.Column(db.DateTime, default=lambda:datetime.now(thailand_tz), onupdate= lambda : datetime.now(thailand_tz) , nullable=True)
+    is_deleted = db.Column(db.Boolean, default=False) # is_deleted (ถังขยะ): ใช้เมื่อเราต้องการ "ลบ" สินค้านั้นออกไปเลย (ไม่อยากเห็นอีกแล้ว)
 
 # --- โครงสร้างฐานข้อมูล (Models) ---
 
@@ -50,6 +50,8 @@ class Product(db.Model , TimestampMixin):
     deleted_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     deleted_at = db.Column(db.DateTime, nullable=True)
     deleter = db.relationship('User', foreign_keys=[deleted_by_id])
+    is_active = db.Column(db.Boolean, default=True) # is_active (พักการขาย): ใช้เมื่อเราต้องการ "ซ่อน" สินค้าชั่วคราว แต่ข้อมูลยังเป็นสินค้าปกติอยู่
+
 
 class Order(db.Model , TimestampMixin):
     id = db.Column(db.Integer , primary_key=True)
@@ -134,15 +136,82 @@ def add_product():
 # API สำหรับดูรายการสินค้าทั้งหมด
 @app.route('/api/products', methods=['GET'])
 def get_products_list():
-    # ดึงเฉพาะสินค้าที่ยังไม่โดนลบ
-    products = Product.query.filter_by(is_deleted=False).all()
-    return jsonify([{
-        "id": p.id,
-        "name": p.name,
-        "price": p.price,
-        "stock": p.stock,
-        "image": p.image_url
-    } for p in products])
+    try:
+        # ดึงข้อมูลมาปกติ
+        products = Product.query.filter_by(is_deleted=False, is_active=True).all()
+        
+        result = []
+        for p in products:
+            result.append({
+                "id": p.id,
+                "name": p.name,
+                "price": float(p.price) if p.price else 0.0,
+                "stock": p.stock,
+                "image": p.image_url or "default.png"
+                # ถ้ามีฟิลด์วันที่ ให้เลี่ยงการส่งออกไปก่อน หรือแปลงเป็น string ให้ดี
+                # "date": p.created_at.isoformat() if p.created_at else None
+            })
+        return jsonify(result)
+    except Exception as e:
+        # ถ้าพังอีก ให้โชว์ Error ออกมาดูเลย
+        print(f"Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# API สำหรับอัพเดชรายการสินค้า
+@app.route('/api/products/<int:id>', methods=['PUT'])
+def update_product(id):
+    product = Product.query.get_or_404(id)
+    data = request.get_json()
+
+    # แก้ไขข้อมูลพื้นฐาน (ถ้าใน data ไม่มีค่ามาให้ ให้ใช้ค่าเดิมใน DB)
+    product.name = data.get('name', product.name)
+    product.price = data.get('price', product.price)
+    product.stock = data.get('stock', product.stock)
+    product.category = data.get('category', product.category)
+    product.description = data.get('description', product.description)
+    product.image_url = data.get('image_url', product.image_url)
+    product.is_active = data.get('is_active', product.is_active)
+
+    # หมายเหตุ: updated_at จะอัปเดตอัตโนมัติจาก lambda ใน Mixin ที่นายตั้งไว้ตอน db.session.commit()
+    
+    try:
+        db.session.commit()
+        return jsonify({
+            "message": f"Product '{product.name}' updated successfully",
+            "updated_at": product.updated_at.strftime('%Y-%m-%d %H:%M:%S')
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+    
+
+# API สำหรับลบรายการสินค้า
+@app.route('/api/products/<int:id>', methods=['DELETE'])
+def delete_product(id):
+    product = Product.query.get_or_404(id)
+    
+    # ตรวจสอบก่อนว่าเคยถูกลบไปหรือยัง
+    if product.is_deleted:
+        return jsonify({"message": "This product is already in trash"}), 400
+
+    # ทำ Soft Delete ตามโครงสร้างที่นายวางไว้
+    product.is_deleted = True
+    product.is_active = False # ปิดการขายทันที
+    product.deleted_at = datetime.now(thailand_tz)
+    
+    # สมมติ ID คนลบ (พรุ่งนี้พอมีระบบ Login เราจะเอา current_user.id มาใส่แทนเลข 1)
+    product.deleted_by_id = 1 
+
+    try:
+        db.session.commit()
+        return jsonify({
+            "message": f"Product '{product.name}' has been moved to trash",
+            "deleted_by": product.deleted_by_id,
+            "deleted_at": product.deleted_at.strftime('%Y-%m-%d %H:%M:%S')
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/orders', methods=['POST'])
